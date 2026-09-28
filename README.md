@@ -258,6 +258,50 @@ pre/postprocessor, 정규화 통계)를 함께 옮긴다. 가중치 파일 하�
 Hub 업로드는 위 데탑 예시에서 꺼져 있다. 업로드하려면 본인 `policy.repo_id`와
 `policy.push_to_hub=true`를 명시한다.
 
+### 데탑에서 π₀ 본 학습 및 Hub 업로드
+
+100 step 시험 학습이 정상 완료된 뒤 실행한다. 이 설정은 시험과 같은
+`train_expert_only=true`, batch size 1로 30,000 step 학습한다.
+`DATASET_ID`는 **실제로 학습할 데이터셋 ID**로 바꾼다.
+
+```bash
+conda activate areumii-lerobot
+cd /실제/areumii_lerobot_plugins/경로
+hf auth whoami
+
+DATASET_ID=1ys1/실제데이터셋ID
+MODEL_ID=1ys1/areumii-pi0-expert-30k
+mkdir -p logs
+set -o pipefail
+
+lerobot-train \
+  --dataset.repo_id="$DATASET_ID" \
+  --policy.type=pi0 --policy.pretrained_path=lerobot/pi0_base \
+  --policy.device=cuda --policy.dtype=bfloat16 \
+  --policy.gradient_checkpointing=true --policy.compile_model=false \
+  --policy.train_expert_only=true \
+  --policy.repo_id="$MODEL_ID" --policy.private=true --policy.push_to_hub=true \
+  --wandb.enable=false \
+  --batch_size=1 --num_workers=2 \
+  --steps=30000 --log_freq=100 --save_freq=10000 \
+  --output_dir=outputs/train/areumii-pi0-expert-30k \
+  --job_name=areumii-pi0-expert-30k \
+  2>&1 | tee logs/areumii-pi0-expert-30k.log &&
+hf upload "$MODEL_ID" \
+  logs/areumii-pi0-expert-30k.log \
+  training_logs/areumii-pi0-expert-30k.log
+```
+
+100 step마다 학습 지표가 출력되고 로컬 `logs/`에 기록된다.
+10,000 step마다 체크포인트가 로컬 `outputs/train/`에 저장된다.
+정상 종료 시 최종 모델이 비공개 Hugging Face 모델 저장소에 올라가며,
+그 후 텍스트 학습 로그가 같은 저장소의 `training_logs/`에 올라간다.
+학습이 실패하면 `&&` 때문에 로그 업로드는 실행되지 않는다.
+중간 체크포인트는 로컬에 보관된다.
+
+다른 데이터셋이나 설정으로 다시 학습할 때는 `MODEL_ID`,
+`output_dir`, `job_name`, 로그 파일명을 새 이름으로 바꾼다.
+
 ## CAN 저장소와 통신 규약
 
 별도 `~/projects/Areum2_can`가 CAN 모터 제어와 공유 메모리를 소유한다.
