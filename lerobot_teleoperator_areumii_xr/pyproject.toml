@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_teleoperator_areumii_xr"
+version = "0.1.0"
+description = "IsaacTeleop/OpenXR teleoperator plugin for the bimanual Areumii robot."
+requires-python = ">=3.12"
+dependencies = [
+    "lerobot>=0.6.1,<0.7",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "lerobot_robot_areumii>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lerobot_teleoperator_areumii_xr*"]

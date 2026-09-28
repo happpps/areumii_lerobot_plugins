@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_robot_areumii"
+version = "0.1.0"
+description = "LeRobot robot plugin for the bimanual Areumii robot."
+requires-python = ">=3.12"
+dependencies = [
+    "lerobot>=0.6.1,<0.7",
+    "numpy>=1.26",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lerobot_robot_areumii*"]
+
+
+[project.scripts]
+areumii-record = "lerobot_robot_areumii.record_areumii:main"

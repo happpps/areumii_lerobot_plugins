@@ -1,0 +1,3 @@
+# Training/model inference only: no XR plugin or IsaacTeleop.
+# Python 3.12; LeRobot version verified on the recording laptop.
+lerobot[training,pi,smolvla,peft]==0.6.1
