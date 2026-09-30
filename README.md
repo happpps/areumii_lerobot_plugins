@@ -198,8 +198,10 @@ LeRobot 업그레이드 시 호환성 확인이 필요하다.
 다운로드하는 것은 원격 추론이 아니다. 노트북 카메라/state를 데탑으로 보내고
 action을 돌려받는 클라이언트·서버 연결은 구현되어 있지 않다. UDP 5005/5006도
 정책 서버용이 아니며 C++ 브리지의 주소는 127.0.0.1로 고정되어 있다.
-데탑에서 학습한 모델을 노트북에 전달해 로컬 rollout하거나, 별도로 원격 추론
-전송 계층을 개발해야 한다. 데탑 학습/모델 추론에는 IsaacTeleop이 필요하지 않다.
+데탑에서 학습한 모델을 노트북에 전달해 로컬 rollout하거나, CAN과 카메라를
+데탑에 직접 연결해 아래 순서로 로컬 rollout한다. 노트북에 하드웨어를 연결한
+채 데탑에서 추론하려면 별도로 원격 추론 전송 계층을 개발해야 한다.
+데탑 학습/자율 추론에는 IsaacTeleop이 필요하지 않다.
 
 ## 데탑: clone, venv, Hugging Face 데이터셋 학습
 
@@ -302,12 +304,169 @@ hf upload "$MODEL_ID" \
 다른 데이터셋이나 설정으로 다시 학습할 때는 `MODEL_ID`,
 `output_dir`, `job_name`, 로그 파일명을 새 이름으로 바꾼다.
 
+## 데탑: π₀ 실로봇 추론 — 터미널 4개 실행 순서
+
+CAN 어댑터와 세 카메라를 **데탑에 직접 연결**하는 구성이다. CAN 제어기,
+UDP/SHM 브릿지, LeRobot 추론은 같은 PC에서 실행한다. 해상도·FourCC·카메라 키는
+위 고정 설정을 유지하되 데탑의 device index가 실제 카메라와 일치하는지 확인한다.
+XR 플러그인과 IsaacTeleop은 설치하지 않는다.
+
+### 최초 준비
+
+CAN 코드는 [수정본 fork](https://github.com/happpps/Areum2_can)의
+`ys/lerobot-integration` 브랜치를 사용한다. clone은 아직 폴더가 없을 때만 실행한다.
+CAN 빌드에는 Makefile의 의존성과 `g++`, `make`가 필요하다. `start.sh`는
+`can-utils`의 `candump`, `ip`, `ipcrm`, `gnome-terminal`도 사용한다.
+
+```bash
+mkdir -p ~/projects
+git clone --branch ys/lerobot-integration \
+  https://github.com/happpps/Areum2_can.git ~/projects/Areum2_can
+```
+
+기존 데탑 conda 환경에 robot 플러그인만 추가한다.
+
+```bash
+conda activate areumii-lerobot
+cd ~/ys_areumii_lerobot/areumii_lerobot_plugins
+git pull --ff-only
+python -m pip install --no-deps -e ./lerobot_robot_areumii
+python -m pip check
+```
+
+### 터미널 1: CAN 초기화 및 모터 제어기
+
+```bash
+cd ~/projects/Areum2_can
+./start.sh
+```
+
+현재 `start.sh`는 SHM key `13563267`을 제거하고 `can0`/`can1`을 1 Mbps,
+sample-point 0.875로 설정한 뒤 `make`를 실행한다. `candump` 로그를 기록하고
+**별도 GNOME Terminal 창에 `./Areum2_can`을 띄운다**. 그 모터 제어 창도
+유지하고 제어기가 정상 실행된 후 터미널 2로 진행한다. CAN 장치명은 데탑의
+실제 인터페이스와 맞아야 한다. 브릿지/추론 실행 중에는 `start.sh`를 다시 실행하지 않는다.
+
+### 터미널 2: ready 자세 이동
+
+```bash
+cd ~/projects/Areum2_can
+g++ -O2 -std=c++17 -I./inc areumii_move_pose.cpp -o areumii_move_pose
+./areumii_move_pose ready
+```
+
+이 명령은 실제 모터 목표를 SHM에 쓰므로 로봇이 움직인다. 이동 프로그램이
+종료되고 준비 자세가 잡힌 뒤 터미널 3으로 진행한다. 브릿지 실행 중에는
+`areumii_move_pose`를 동시에 실행하지 않는다.
+
+### 터미널 3: UDP ↔ SHM 브릿지
+
+```bash
+cd ~/projects/Areum2_can
+g++ -O2 -std=c++17 -pthread -I./inc \
+  areumii_udp_shm_bridge.cpp -o areumii_udp_shm_bridge
+./areumii_udp_shm_bridge
+```
+
+현재 fork의 소스는 저장소 루트의 `areumii_udp_shm_bridge.cpp`다.
+루트에 실행 파일을 만들고 그 파일을 실행하도록 경로를 통일했다.
+기존 캡처의 `can_bridge/` 빌드 경로와 루트 실행 경로를 혼용하지 않는다.
+이 터미널은 추론 중 계속 실행해 둔다. 명령은 `127.0.0.1:5005`, 피드백은
+`127.0.0.1:5006`이며 robot 플러그인은 32D 피드백을 기대한다.
+
+### 터미널 4: 체크포인트 확인 및 명령 전송 없는 추론
+
+```bash
+conda activate areumii-lerobot
+cd ~/ys_areumii_lerobot/areumii_lerobot_plugins
+
+find ./outputs/train \
+  -path '*/checkpoints/*/pretrained_model/model.safetensors' \
+  -exec ls -lh {} +
+
+MODEL="./outputs/train/areumii-pi0-expert-30k/checkpoints/020000/pretrained_model"
+read -r -p "학습 때 사용한 task 문장: " TASK
+
+lerobot-rollout \
+  --policy.path="$MODEL" \
+  --robot.type=areumii --robot.id=areumii_c1 \
+  --robot.enable_command=false \
+  --strategy.type=base --inference.type=sync \
+  --task="$TASK" --device=cuda --fps=30 \
+  --duration=15 --display_data=true --play_sounds=false
+```
+
+`MODEL`은 정상 저장된 checkpoint의 **pretrained_model 디렉터리 전체**를
+가리킨다. 예시의 20k 경로는 실제 `find` 결과에 맞춰 바꾼다. 저장 중 디스크
+부족으로 실패한 checkpoint나 `last`를 무조건 사용하지 않는다. 파일 존재만으로
+완전한 저장을 보장하지 않으며 모델 로딩 성공까지 확인한다. 이미 정상 업로드한
+모델이면 `MODEL=1ys1/실제모델ID`로 지정할 수 있다.
+
+`TASK`에는 데이터 수집 때의 문장을 그대로 입력한다. 위 π₀ 학습 예시는
+head/left_wrist/right_wrist 키를 유지하므로 SmolVLA의 camera1/2/3
+`rename_map`을 붙이지 않는다. 다른 매핑으로 학습했다면 checkpoint 설정을 따른다.
+`enable_command=false`는 **policy의 모터 명령 전송만** 끈다. 앞서 실행한
+`ready` 이동이나 CAN 제어기의 동작을 끄는 옵션은 아니다. 카메라 영상,
+16D 관절 관측, 모델 액션 생성이 정상인지 확인한다. `base`는 데이터셋을 녹화하지 않는다.
+
+### 터미널 4: 실제 π₀ 구동
+
+위 확인 실행이 정상 종료된 뒤 **같은 터미널에서** 실행한다. 앞에서 입력한
+`MODEL`과 `TASK`를 그대로 사용하며 CAN 제어기와 브릿지는 계속 실행해 둔다.
+로봇 시작 자세와 물체 배치는 데이터 수집 조건에 맞춘다.
+
+```bash
+lerobot-rollout \
+  --policy.path="$MODEL" \
+  --robot.type=areumii --robot.id=areumii_c1 \
+  --robot.enable_command=true \
+  --strategy.type=base --inference.type=sync \
+  --task="$TASK" --device=cuda --fps=30 \
+  --duration=60 --display_data=true --play_sounds=false
+```
+
+`enable_command=true`는 실제 로봇에 목표 관절각을 전송한다. `fps=30`은 목표
+제어 주기이며 π₀가 실제로 그 주기를 달성하는지는 실행 로그로 확인한다.
+sync 동작 확인 후 필요하면 RTC 설정을 별도로 비교한다.
+
+### 추론 에피소드 녹화 및 Hub 업로드
+
+실제 동작 확인 후 `base` 실행 대신 아래를 실행하면 5개 에피소드를 기록한다.
+최초 로그인 또는 계정 변경 시 `hf auth login`을 실행한다. `EVAL_ID`는
+기존 평가와 겹치지 않도록 실행 시간으로 새 이름을 만든다.
+
+```bash
+hf auth whoami
+EVAL_ID="1ys1/areumii-pi0-eval-$(date +%Y%m%d_%H%M%S)"
+
+lerobot-rollout \
+  --policy.path="$MODEL" \
+  --robot.type=areumii --robot.id=areumii_c1 \
+  --robot.enable_command=true \
+  --strategy.type=episodic --inference.type=sync \
+  --strategy.reset_to_initial_position=true \
+  --task="$TASK" --device=cuda --fps=30 \
+  --dataset.repo_id="$EVAL_ID" --dataset.single_task="$TASK" \
+  --dataset.num_episodes=5 --dataset.episode_time_s=3000 \
+  --dataset.reset_time_s=5 --dataset.push_to_hub=true \
+  --display_data=true --play_sounds=false
+```
+
+3000초는 기존 녹화와 같은 긴 상한이다. 오른쪽 화살표로 에피소드를 일찍
+끝내고, 왼쪽 화살표로 버리고 재녹화하며, Esc로 종료한다. 에피소드 사이에는
+시작 시의 자세로 돌아오는 설정이므로 시작 자세를 준비한 후 실행한다.
+평가 데이터는 로컬에도 저장되고 종료 시 Hub로 업로드된다.
+이 명령은 성공/실패 라벨을 자동 판정하지 않는다.
+
+참고: [LeRobot 0.6.1 rollout](https://huggingface.co/docs/lerobot/v0.6.1/inference).
+
 ## CAN 저장소와 통신 규약
 
 별도 `~/projects/Areum2_can`가 CAN 모터 제어와 공유 메모리를 소유한다.
 그 안의 `areumii_udp_shm_bridge.cpp`, `areumii_move_pose.cpp`, `inc/Sharemem.hpp`를
-함께 관리하며 여기로 복사하지 않는다. 실제 CAN 저장소 원격 주소와 빌드 환경은
-팀원 저장소에서 확인한다.
+함께 관리하며 여기로 복사하지 않는다. 실로봇 실행은 수정본 fork
+`https://github.com/happpps/Areum2_can`의 `ys/lerobot-integration` 브랜치를 사용한다.
+팀원 원본은 `https://github.com/dupsukk/Areum2_can`이며 fork에서 upstream으로 관리한다.
 
 ```text
 XR 또는 로컬 policy → Robot 플러그인 → UDP 127.0.0.1:5005
