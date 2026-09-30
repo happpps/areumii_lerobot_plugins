@@ -437,7 +437,7 @@ sync 동작 확인 후 필요하면 RTC 설정을 별도로 비교한다.
 
 ```bash
 hf auth whoami
-EVAL_ID="1ys1/areumii-pi0-eval-$(date +%Y%m%d_%H%M%S)"
+EVAL_ID="1ys1/rollout_pi0-doubletask-v1-$(date +%Y%m%d_%H%M%S)"
 
 lerobot-rollout \
   --policy.path="$MODEL" \
@@ -447,7 +447,7 @@ lerobot-rollout \
   --strategy.reset_to_initial_position=true \
   --task="$TASK" --device=cuda --fps=30 \
   --dataset.repo_id="$EVAL_ID" --dataset.single_task="$TASK" \
-  --dataset.num_episodes=5 --dataset.episode_time_s=3000 \
+  --dataset.num_episodes=10 --dataset.episode_time_s=3000 \
   --dataset.reset_time_s=5 --dataset.push_to_hub=true \
   --display_data=true --play_sounds=false
 ```
