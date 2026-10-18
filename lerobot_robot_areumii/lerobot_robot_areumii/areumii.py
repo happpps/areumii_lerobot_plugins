@@ -10,7 +10,7 @@ import time
 from lerobot.cameras import make_cameras_from_configs
 from lerobot.robots import Robot
 
-from .config_areumii import AreumiiConfig
+from .config_areumii import AreumiiConfig, detect_areumii_camera_paths
 from .shared_state import (
     FEATURE_KEYS,
     LEFT_ARM_SLICE,
@@ -94,6 +94,16 @@ class Areumii(Robot):
     def connect(self, calibrate: bool = True) -> None:
         if self._connected:
             return
+
+        automatic = {
+            key: cam for key, cam in self.cameras.items()
+            if str(getattr(self.config.cameras[key], "index_or_path", "")).startswith("auto:")
+        }
+        if automatic:
+            paths = detect_areumii_camera_paths()
+            for key, cam in automatic.items():
+                cam.index_or_path = paths[key]
+                logger.info("Detected camera %s: %s", key, paths[key])
 
         self.bridge = UdpBridge(
             cmd_host=self.config.cmd_host,

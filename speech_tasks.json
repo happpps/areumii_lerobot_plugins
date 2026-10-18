@@ -1,0 +1,12 @@
+[
+  {
+    "name": "분홍색 보틀",
+    "task": "Pick up the pink bottle and place it in the box.",
+    "aliases": ["핑크" , "보틀", "병", "bottle"]
+  },
+  {
+    "name": "이클립스",
+    "task": "Pick up the eclipse and place it in the box.",
+    "aliases": ["이클릭스","이클립스", "클", "eclipse", "사탕"]
+  }
+]

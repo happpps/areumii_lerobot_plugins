@@ -110,16 +110,19 @@ areumii-record \
 이동하며, `enable-command=false`이면 reset 명령도 보내지 않는다.
 현재 task는 `Place the green can on the upper shelf, then place the blue can on the lower shelf.`다.
 
-### 고정 카메라 설정 — 변경하지 않음
+### 자동 카메라 감지
 
 | 키 | 장치 | 캡처 해상도 | FPS / FourCC | 데이터셋에 전달되는 이미지 |
 | --- | --- | --- | --- | --- |
-| head | index 8 (`/dev/video8`) | 640×480 | 30 / UYVY | 640×480 |
-| left_wrist | index 10 (`/dev/video10`) | 1280×720 | 30 / MJPG | 320×180, 180도 회전 |
-| right_wrist | index 12 (`/dev/video12`) | 1280×720 | 30 / MJPG | 320×180, 180도 회전 |
+| head | 허브 포트 1의 RealSense RGB 인터페이스 | 640×480 | 30 / YUYV | 640×480 |
+| left_wrist | 허브 포트 2의 U20 | 1280×720 | 30 / MJPG | 320×180, 180도 회전 |
+| right_wrist | 허브 포트 3의 U20 | 1280×720 | 30 / MJPG | 320×180, 180도 회전 |
 
-모두 OpenCV V4L2다. 실제 코드는 정수 device index를 사용하며 `/dev/v4l/by-id`
-경로가 아니다. 재부팅 후 번호가 바뀌면 장치 연결 상태부터 확인한다.
+모두 OpenCV V4L2다. 연결할 때마다 `/dev/v4l/by-path/`와 sysfs의 장치 이름을
+확인해 카메라 경로를 찾는다. `/dev/videoN` 번호나 허브를 연결한 PC 포트가
+바뀌어도 감지한다. 허브 내부의 포트 1/2/3 배정은 유지해야 한다.
+U20 두 대는 동일한 장치 ID를 사용하므로 `by-id`만으로 좌우를 구분할 수 없다.
+명시적인 `--robot.cameras` 경로 설정도 사용할 수 있다.
 
 ## SmolVLA 학습
 

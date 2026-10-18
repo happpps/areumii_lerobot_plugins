@@ -151,6 +151,16 @@ Usage examples
 """
 
 import logging
+import shlex
+import subprocess
+import time
+from contextlib import contextmanager
+
+from areumii_speech import SpeechTaskPrompt, list_audio_devices, parse_speech_args
+
+speech_options = None
+episode_reset_command = None
+episode_reset_settle_s = 0.0
 
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
@@ -209,6 +219,123 @@ import lerobot_robot_areumii  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def parse_episode_reset_args(argv: list[str]) -> tuple[str | None, float, list[str]]:
+    """Remove Areumii reset options before LeRobot parses its own CLI options."""
+    command = None
+    settle_s = 0.0
+    remaining: list[str] = []
+    index = 0
+
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--episode-reset-command":
+            if index + 1 >= len(argv):
+                raise ValueError("--episode-reset-command needs a quoted command.")
+            command = argv[index + 1]
+            index += 2
+        elif arg.startswith("--episode-reset-command="):
+            command = arg.split("=", 1)[1]
+            index += 1
+        elif arg == "--episode-reset-settle-s":
+            if index + 1 >= len(argv):
+                raise ValueError("--episode-reset-settle-s needs a number.")
+            settle_s = float(argv[index + 1])
+            index += 2
+        elif arg.startswith("--episode-reset-settle-s="):
+            settle_s = float(arg.split("=", 1)[1])
+            index += 1
+        else:
+            remaining.append(arg)
+            index += 1
+
+    if settle_s < 0:
+        raise ValueError("--episode-reset-settle-s must be non-negative.")
+    return command, settle_s, remaining
+
+
+def run_episode_reset(robot: object) -> None:
+    """Reset the real robot while policy output is paused between episodes.
+
+    Prefer the Areumii robot's own UDP reset method.  It sends the reset pose
+    through the same bridge as rollout, avoiding a second command process.
+    An explicit command remains available only as a fallback/override.
+    """
+    if episode_reset_command:
+        command = shlex.split(episode_reset_command)
+        if not command:
+            raise ValueError("--episode-reset-command cannot be empty.")
+        logger.info("Episode reset command: %s", episode_reset_command)
+        print(f"\nResetting robot: {episode_reset_command}")
+        subprocess.run(command, check=True)
+    else:
+        reset_pose = getattr(robot, "reset_pose", None)
+        if not callable(reset_pose):
+            raise RuntimeError(
+                "Robot has no reset_pose(). Supply --episode-reset-command instead."
+            )
+        print("\nResetting robot through Areumii UDP bridge")
+        reset_pose()
+
+    if episode_reset_settle_s > 0:
+        logger.info("Waiting %.1f s for reset settling", episode_reset_settle_s)
+        time.sleep(episode_reset_settle_s)
+
+
+@contextmanager
+def exclusive_task_input(strategy):
+    """Give input() sole ownership of the terminal while selecting a task."""
+    listener = getattr(strategy, "_listener", None)
+    if listener is None:
+        yield
+        return
+
+    from lerobot.rollout.strategies.episodic import init_keyboard_listener
+    backend = init_keyboard_listener.__globals__
+    create_listener = backend.get("create_key_listener")
+    apply_control = backend.get("apply_recording_control")
+    events = getattr(strategy, "_events", None)
+    if not callable(create_listener) or not callable(apply_control) or events is None:
+        raise RuntimeError("키보드 리스너 구성이 다릅니다. task 입력 충돌을 방지하기 위해 중단합니다.")
+
+    listener.stop()
+    join = getattr(listener, "join", None)
+    if callable(join):
+        join(timeout=2.0)
+    alive = getattr(listener, "is_alive", None)
+    if callable(alive) and alive():
+        raise RuntimeError("키보드 리스너가 종료되지 않아 task 입력을 시작하지 않습니다.")
+    strategy._listener = None
+
+    # Terminal backends may leave echo/canonical mode disabled after stopping.
+    terminal_state = None
+    if sys.stdin.isatty():
+        import termios
+        fd = sys.stdin.fileno()
+        terminal_state = termios.tcgetattr(fd)
+        prompt_state = termios.tcgetattr(fd)
+        prompt_state[3] |= termios.ICANON | termios.ECHO | termios.ISIG
+        termios.tcsetattr(fd, termios.TCSANOW, prompt_state)
+
+    def on_key(name):
+        key = name.lower()
+        control = {"right": "right", "n": "right", "left": "left", "r": "left",
+                   "esc": "esc", "q": "esc"}.get(key)
+        if control is not None:
+            apply_control(control, events)
+
+    try:
+        yield
+    finally:
+        if terminal_state is not None:
+            termios.tcsetattr(fd, termios.TCSANOW, terminal_state)
+        # Preserve the SAME event dictionary: the running episode/reset loops
+        # already hold references to it. A fresh init_keyboard_listener() would
+        # silently detach arrow/quit controls from those loops.
+        strategy._listener = create_listener(
+            on_key, controls_help="Right/Left/Esc, or n=next, r=re-record, q=quit"
+        )
+
+
 @parser.wrap()
 def rollout(cfg: RolloutConfig):
     """Main entry point for policy deployment.
@@ -218,6 +345,13 @@ def rollout(cfg: RolloutConfig):
     engine and as the task label saved with that episode.
     """
     init_logging()
+
+    speech_prompt = None
+    if speech_options is not None and speech_options.enabled:
+        if cfg.strategy.type != "episodic":
+            raise ValueError("음성 입력은 --strategy.type=episodic에서 지원합니다.")
+        speech_prompt = SpeechTaskPrompt(speech_options)
+        speech_prompt.prepare()
 
     # build_rollout_context() may initialize the inference backend with the
     # configured task. Give it a harmless placeholder when no task was passed;
@@ -273,19 +407,33 @@ def rollout(cfg: RolloutConfig):
             prompt_state = {"last_task": None, "episode": 0}
 
             def policy_loop_with_prompt(*args, **kwargs):
+                # The strategy resumes RTC BEFORE calling this wrapper. Keep it
+                # paused throughout human input, including retries/confirmation.
+                engine = strategy._engine
+                engine.pause()
+                # Discard any unfinished action chunk from the preceding
+                # episode before the physical reset command touches the robot.
+                engine.reset()
                 prompt_state["episode"] += 1
+
+                # The generic episodic reset timer does not command an Areumii
+                # pose. Run the explicit reset command while VLA output is
+                # paused, then wait for the robot to settle before inference.
+                # run_episode_reset(ctx.hardware.robot_wrapper)
 
                 previous = prompt_state["last_task"]
                 print("\n" + "=" * 64)
                 print(f"Episode {prompt_state['episode']} task prompt")
-                if previous:
-                    print(f"Previous: {previous}")
-                    task = input("Task >>> ").strip()
-                    if not task:
-                        task = previous
-                else:
-                    task = input("Task >>> ").strip()
-
+                with exclusive_task_input(strategy):
+                    if speech_prompt is not None:
+                        task = speech_prompt.request(previous, shutdown_event)
+                    elif previous:
+                        print(f"Previous: {previous}")
+                        task = input("Task >>> ").strip()
+                        if not task:
+                            task = previous
+                    else:
+                        task = input("Task >>> ").strip()
                 if not task:
                     raise ValueError("Task prompt cannot be empty for the first episode.")
 
@@ -301,9 +449,9 @@ def rollout(cfg: RolloutConfig):
                 if hasattr(strategy, "_engine") and hasattr(strategy._engine, "_task"):
                     strategy._engine._task = task
                 else:
-                    logger.warning(
+                    raise RuntimeError(
                         "Inference engine has no _task attribute; "
-                        "policy prompt may not have been updated."
+                        "refusing to run with a stale language instruction."
                     )
 
                 # Most important for the saved rollout dataset: EpisodicStrategy
@@ -318,7 +466,28 @@ def rollout(cfg: RolloutConfig):
                 print(f"Running: {task}")
                 print("=" * 64)
 
-                return original_policy_loop(*args, **kwargs)
+                # Drop actions/observations computed before the new instruction.
+                # Human input time must not enter the control-cycle timer either.
+                engine.reset()
+                timer = kwargs.get("timer")
+                if timer is not None:
+                    timer.restart()
+                engine.resume()
+                try:
+                    return original_policy_loop(*args, **kwargs)
+                finally:
+                    engine.pause()
+
+                    # 이미 실행 중이던 RTC 추론이 끝날 때까지 대기
+                    time.sleep(1.0)
+
+                    # 늦게 도착한 이전 에피소드 action까지 제거
+                    engine.reset()
+
+                    # 이전 에피소드 observation도 제거
+                    if hasattr(engine, "_obs_lock") and hasattr(engine, "_obs_holder"):
+                        with engine._obs_lock:
+                            engine._obs_holder["obs"] = None
 
             strategy._policy_loop = policy_loop_with_prompt
 
@@ -336,7 +505,7 @@ def rollout(cfg: RolloutConfig):
         logger.info("Rollout setup complete, starting rollout...")
         strategy.run(ctx)
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, EOFError):
         logger.info("Interrupted by user")
 
     finally:
@@ -349,6 +518,15 @@ def rollout(cfg: RolloutConfig):
 
 def main():
     """CLI entry point for ``lerobot-rollout``."""
+    global speech_options, episode_reset_command, episode_reset_settle_s
+    episode_reset_command, episode_reset_settle_s, remaining = parse_episode_reset_args(
+        sys.argv[1:]
+    )
+    speech_options, remaining = parse_speech_args(remaining)
+    if speech_options.list_devices:
+        list_audio_devices()
+        return
+    sys.argv = [sys.argv[0], *remaining]
     register_third_party_plugins()
     rollout()
 

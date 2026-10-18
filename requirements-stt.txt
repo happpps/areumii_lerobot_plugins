@@ -1,0 +1,4 @@
+# Install in the existing LeRobot environment only if speech input is needed.
+faster-whisper>=1.1,<2
+sounddevice>=0.5,<1
+scipy>=1.11,<2

@@ -140,6 +140,12 @@ def parse_args() -> argparse.Namespace:
         help="smoke = no eval dataset; eval = episodic rollout + recording.",
     )
     p.add_argument("--task", default=DEFAULT_TASK)
+    p.add_argument("--speech", type=str2bool, default=False,
+                   help="Use per-episode voice/text task selection in the local prompt script.")
+    p.add_argument("--speech-task-map", default=None, help="JSON task/alias mapping file.")
+    p.add_argument("--speech-model", default="small")
+    p.add_argument("--speech-seconds", type=float, default=5.0)
+    p.add_argument("--speech-input-device", default=None)
     p.add_argument(
         "--rename-map",
         default=None,
@@ -246,6 +252,11 @@ def parse_args() -> argparse.Namespace:
 
     if args.mode == "eval" and not args.repo_id:
         p.error("--repo-id is required when --mode eval.")
+    if args.speech:
+        if args.mode != "eval":
+            p.error("--speech true requires --mode eval. For an audio-only test use areumii_speech.py.")
+        if not args.speech_task_map:
+            p.error("--speech true requires --speech-task-map.")
 
     if args.num_episodes < 1:
         p.error("--num-episodes must be >= 1.")
@@ -276,6 +287,20 @@ def build_common_cmd(
         f"--interpolation_multiplier={args.interpolation_multiplier}",
         "--play_sounds=false",
     ]
+
+    if args.speech:
+        script = Path(__file__).resolve().with_name("areumii_rollout_prompt.py")
+        if not script.is_file():
+            raise FileNotFoundError(f"Speech rollout script not found: {script}")
+        cmd = [sys.executable, str(script), *cmd[1:]]
+        cmd += [
+            "--speech.enabled=true",
+            f"--speech.task_map={args.speech_task_map}",
+            f"--speech.model={args.speech_model}",
+            f"--speech.seconds={args.speech_seconds}",
+        ]
+        if args.speech_input_device is not None:
+            cmd.append(f"--speech.input_device={args.speech_input_device}")
 
     if args.rename_map is not None:
         cmd.append(f"--rename_map={args.rename_map}")
@@ -370,6 +395,10 @@ def label_eval_results(
     checkpoint_label: str,
 ) -> None:
     if not args.label_results:
+        return
+    if args.speech:
+        print("[RESULTS] Voice mode uses per-episode tasks saved in the rollout dataset.")
+        print("[RESULTS] Fixed-task CSV labeling is skipped to avoid assigning the wrong task.")
         return
 
     print("\n[RESULT LABELING]")
