@@ -29,6 +29,7 @@ from lerobot_robot_areumii.shared_state import (
 )
 
 from .config_areumii_xr import AreumiiXRConfig
+from lerobot_robot_areumii.teleop_resources import resolve_urdf
 
 logger = logging.getLogger(__name__)
 
@@ -179,10 +180,7 @@ class AreumiiXR(Teleoperator):
         super().__init__(config)
         self.config = config
 
-        if self.config.urdf is None:
-            raise ValueError("--teleop.urdf is required for areumii_xr")
-
-        self.urdf = str(self.config.urdf)
+        self.urdf = str(resolve_urdf(self.config.urdf))
         self.xr: BimanualXRController | None = None
         self._connected = False
         self.kin = {

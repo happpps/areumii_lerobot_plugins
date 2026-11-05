@@ -9,6 +9,7 @@ from lerobot.teleoperators.config import TeleoperatorConfig
 @TeleoperatorConfig.register_subclass("areumii_xr")
 @dataclass
 class AreumiiXRConfig(TeleoperatorConfig):
+    # None selects the model bundled in the installed AReuMii-Teleop package.
     urdf: Path | None = None
 
     cloudxr_env: str | None = None

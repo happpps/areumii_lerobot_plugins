@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import math
 import os
 import sys
 from pathlib import Path
+
+from .teleop_resources import prepare_legacy_teleop_path, resolve_urdf
 
 
 # ---------------------------------------------------------------------------
@@ -16,16 +19,9 @@ CMD_PORT = 5005
 FEEDBACK_PORT = 5006
 
 TELEOP_ID = "areumii_xr"
-ISAAC_TELEOP_PATH = str(
-    Path(
-        os.environ.get("AREUMII_TELEOP_PATH", Path.home() / "projects/IsaacLab_teleop/real_teleop")
-    ).expanduser()
-)
-URDF = str(
-    Path(
-        os.environ.get("AREUMII_URDF", Path(ISAAC_TELEOP_PATH) / "areumii_c1_kinematics.urdf")
-    ).expanduser()
-)
+# Deprecated compatibility constants: source paths are used only when explicitly set.
+ISAAC_TELEOP_PATH = os.environ.get("AREUMII_TELEOP_PATH", "")
+URDF = os.environ.get("AREUMII_URDF", "")
 
 # TASK = "Pick up the blue can and place it on the upper shelf."
 # TASK = "Pick up the green can and place it on the upper shelf."
@@ -50,26 +46,42 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compact lerobot-record launcher for the real Areumii robot."
     )
-    parser.add_argument("--repo-id", required=True)
-    parser.add_argument("--num-episodes", type=int, required=True)
-    parser.add_argument("--push-to-hub", type=str2bool, required=True)
-    parser.add_argument("--display-data", type=str2bool, required=True)
-    parser.add_argument("--enable-command", type=str2bool, required=True)
-    return parser.parse_args()
+    parser.add_argument("--repo_id", "--repo-id", required=True)
+    parser.add_argument("--num_episodes", "--num-episodes", type=int, required=True)
+    parser.add_argument("--push_to_hub", "--push-to-hub", type=str2bool, required=True)
+    parser.add_argument(
+        "--display_data", "--display-data", type=str2bool, required=True
+    )
+    parser.add_argument(
+        "--enable_command", "--enable-command", type=str2bool, required=True
+    )
+    parser.add_argument(
+        "--urdf", type=Path, help="Override the bundled AReuMii-Teleop model."
+    )
+    parser.add_argument("--cloudxr_env", help="CloudXR environment profile.")
+    parser.add_argument("--auto_launch_cloudxr", type=str2bool, default=True)
+    parser.add_argument("--task", default=TASK)
+    parser.add_argument("--episode_time_s", type=float, default=EPISODE_TIME_S)
+    parser.add_argument("--reset_time_s", type=float, default=RESET_TIME_S)
+    parser.add_argument("--fps", type=int, default=FPS)
+    args = parser.parse_args()
+    if (
+        args.num_episodes <= 0
+        or args.fps <= 0
+        or not math.isfinite(args.episode_time_s)
+        or args.episode_time_s <= 0
+        or not math.isfinite(args.reset_time_s)
+        or args.reset_time_s < 0
+    ):
+        parser.error(
+            "Episode count, duration and fps must be positive; reset time must be nonnegative."
+        )
+    return args
 
 
 def _prepare_python_path() -> None:
-    if ISAAC_TELEOP_PATH not in sys.path:
-        sys.path.insert(0, ISAAC_TELEOP_PATH)
-
-    old_pythonpath = os.environ.get("PYTHONPATH", "")
-    paths = [p for p in old_pythonpath.split(":") if p]
-    if ISAAC_TELEOP_PATH not in paths:
-        os.environ["PYTHONPATH"] = (
-            ISAAC_TELEOP_PATH
-            if not old_pythonpath
-            else f"{ISAAC_TELEOP_PATH}:{old_pythonpath}"
-        )
+    """Compatibility hook for callers that explicitly set the old source path."""
+    prepare_legacy_teleop_path()
 
 
 def _install_areumii_reset_hook(lerobot_record_module) -> None:
@@ -122,6 +134,7 @@ def _install_areumii_reset_hook(lerobot_record_module) -> None:
 def main() -> int:
     args = parse_args()
     _prepare_python_path()
+    urdf = resolve_urdf(args.urdf)
 
     from lerobot.scripts import lerobot_record
 
@@ -131,22 +144,23 @@ def main() -> int:
         f"--robot.cmd_port={CMD_PORT}",
         f"--robot.feedback_port={FEEDBACK_PORT}",
         f"--robot.enable_command={str(args.enable_command).lower()}",
-
         "--teleop.type=areumii_xr",
         f"--teleop.id={TELEOP_ID}",
-        f"--teleop.urdf={URDF}",
-
+        f"--teleop.urdf={urdf}",
+        f"--teleop.auto_launch_cloudxr={str(args.auto_launch_cloudxr).lower()}",
         f"--dataset.repo_id={args.repo_id}",
-        f"--dataset.single_task={TASK}",
+        f"--dataset.single_task={args.task}",
         f"--dataset.num_episodes={args.num_episodes}",
-        f"--dataset.episode_time_s={EPISODE_TIME_S}",
-        f"--dataset.reset_time_s={RESET_TIME_S}",
-        f"--dataset.fps={FPS}",
+        f"--dataset.episode_time_s={args.episode_time_s}",
+        f"--dataset.reset_time_s={args.reset_time_s}",
+        f"--dataset.fps={args.fps}",
         f"--dataset.video={str(VIDEO).lower()}",
         f"--dataset.push_to_hub={str(args.push_to_hub).lower()}",
-
         f"--display_data={str(args.display_data).lower()}",
     ]
+
+    if args.cloudxr_env:
+        cmd_args.append(f"--teleop.cloudxr_env={args.cloudxr_env}")
 
     print("[Areumii] launching:")
     print("lerobot-record " + " ".join(cmd_args))

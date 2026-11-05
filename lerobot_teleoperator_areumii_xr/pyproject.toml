@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
     "lerobot_robot_areumii>=0.1.0",
+    "areumii-teleop>=0.1.0,<0.2",
 ]
 
 [tool.setuptools.packages.find]

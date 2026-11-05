@@ -54,28 +54,52 @@ python -m pip install --no-deps -e ./lerobot_robot_areumii
 python -m pip install --no-deps -e ./lerobot_teleoperator_areumii_xr
 ```
 
-녹화에는 LeRobot의 `core_scripts`, IK용 `kinematics` 의존성(placo), NumPy,
-SciPy, 기존 IsaacTeleop/OpenXR/CloudXR 환경이 필요하다. `isaac_teleop`은
-인접 `IsaacLab_teleop/real_teleop`의 모듈이고 `isaacteleop`은 별도 설치 패키지다.
-XR 플러그인의 pyproject만 설치한다고 VR 런타임까지 준비되는 것은 아니다.
-
-기본 경로는 기존 노트북과 같다. 다른 경로에서는 선택적으로 설정한다:
+녹화에는 LeRobot의 `core-scripts`, `kinematics`와 IsaacTeleop/OpenXR/CloudXR이
+필요하다. XR helper `isaac_teleop`과 기본 URDF는 이제 독립
+[AReuMii-Teleop](https://github.com/happpps/AReuMii-Teleop) 패키지에서 가져온다.
+기존 IsaacLab 소스 경로나 PYTHONPATH 설정은 필요하지 않다.
 
 ```bash
-cp .env.example .env
-# .env의 경로를 편집한 뒤 명시적으로 로드한다. 자동 로드하지 않는다.
-set -a
-source .env
-set +a
-export PYTHONPATH="${AREUMII_TELEOP_PATH:-$HOME/projects/IsaacLab_teleop/real_teleop}${PYTHONPATH:+:$PYTHONPATH}"
+uv pip install --python ~/projects/env_lerobot/bin/python \
+  'git+https://github.com/happpps/AReuMii-Teleop.git@95694fe7552b0989595277a9e1359006b4d0af59'
+# 인접 체크아웃을 개발용으로 사용할 때는 위 명령 대신:
+# uv pip install --python ~/projects/env_lerobot/bin/python -e ../AReuMii-Teleop
 python preflight_check.py
 ```
 
-`AREUMII_TELEOP_PATH` 기본값은 `$HOME/projects/IsaacLab_teleop/real_teleop`,
-`AREUMII_URDF` 기본값은 그 폴더의 `areumii_c1_kinematics.urdf`다.
-`areumii-record`는 자체적으로 teleop 경로를 추가한다. preflight와 일반
-rollout은 플러그인 자동 탐색 시 XR도 import할 수 있어 노트북에서는 위
-`PYTHONPATH` 설정을 유지한다.
+AReuMii-Teleop의 기본 설치는 공통 helper/URDF를 제공하며, 기존 노트북의
+IsaacTeleop 1.5.123rc1을 재설치하지 않는다. 독립 teleop 저장소의 `runtime`
+extra는 1.4 버전 기준이므로 기존 노트북에 추가로 적용하지 않는다.
+통합 Docker는 이 녹화 환경에 맞춰 1.5.123rc1로 별도 잠근다.
+
+`--teleop.urdf` 및 `areumii-record --urdf`를 생략하면 패키지 모델을 사용한다.
+사용자 모델은 CLI 또는 `AREUMII_URDF`로 지정할 수 있다. 명시적으로 설정한
+`AREUMII_TELEOP_PATH`는 경고와 함께 이전 source import 용도로만 지원한다.
+
+## 통합 Docker 배포
+
+[Docker 배포·실행 설명서](docker/README.md)에 **다른 Ubuntu PC에서 설치하고
+실행하는 순서**를 정리했다. 배포본을 받았다면 이미지 재빌드 없이
+`areumii-teleop-vla-delivery.tar`와 `.tar.sha256`을 옮겨 사용한다.
+[빠른 시작 안내](docker/START_HERE.md)도 배포 파일 안에 포함된다.
+
+설명서에는 호스트 Docker·GPU 준비, 파일 복사·체크섬 검사·이미지 등록,
+사용자·카메라 설정, CAN·Quest 연결, XR 조작·LeRobot 녹화, 종료·데이터 보관과
+오류 해결을 담았다. 같은 이미지에서 CAN, bridge, XR teleop, LeRobot 녹화를
+별도 프로세스로 실행한다. 기본 검사는 장치를 시작하지 않으며 실제 CAN 기동에는
+명시적 하드웨어 활성화가 필요하다. 실제 Quest·카메라·모터 통합 검증은 남아 있다.
+
+아래 명령은 배포받은 사용자가 아니라 **이미지를 만드는 개발자용**이다.
+
+```bash
+uv run --no-project python docker/prepare_bundle.py
+cd dist/areumii-teleop-vla
+cp env.example .env
+docker compose build check
+docker compose run --rm check
+```
+
+## Python 환경에서 직접 녹화
 
 실행 전 CAN 담당 저장소에서 기존 CAN 제어기와 UDP/SHM 브리지를 준비한다.
 다음 명령은 운영자가 직접 실행하는 예시이며, 저장소 정리 과정에서는 실행하지 않았다.
@@ -561,3 +585,17 @@ Git 포함 후보는 20개 텍스트 파일이며 기존 생성 파일은 제외
 종료 코드 0을 확인했다(Hub offline 설정). 현재 소스로 wheel을 다시 빌드하고
 임시 venv에 재설치했다. 기존 노트북 환경의 `pip check`는 위 `typeguard` 누락으로
 실패했으며, 실제 녹화·모델 학습·추론 성능은 이번 검증 범위에 포함되지 않는다.
+
+## 2026-10-19: 독립 teleop 연결 및 녹화 Docker 검증
+
+- XR 플러그인과 `areumii-record`는 설치한 AReuMii-Teleop의 URDF를 기본으로 사용한다.
+- 기존 노트북에는 공통 teleop 패키지와 로컬 플러그인 메타데이터만 `--no-deps`로 갱신했다.
+  LeRobot/PyTorch/IsaacTeleop 버전은 변경하지 않았다.
+- Docker는 LeRobot 0.6.1, IsaacTeleop 1.5.123rc1, CPU PyTorch 2.11과 영상 코덱을 잠갔다.
+  CAN/bridge/XR/녹화는 동일 이미지를 사용한다. 정책 추론은 이번 이미지 범위에 포함하지 않는다.
+- 이미지 안에서 플러그인 테스트 6개, SDK/URDF/FK, H.264 encode/decode, 하드웨어 기동 차단 검사가 통과했다.
+- 실제 VR·카메라·모터 연결은 시험하지 않았다. CloudXR 실행에는 호스트의 NVIDIA Container Toolkit/GPU 전달 설정이 필요하다.
+
+```bash
+docker run --rm -i --network none --entrypoint python areumii-teleop-vla:0.1.0 - < tests/test_teleop_packaging.py
+```
